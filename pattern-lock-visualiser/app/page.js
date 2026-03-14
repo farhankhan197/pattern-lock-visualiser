@@ -1,10 +1,40 @@
 "use client"
 import { useState, useCallback, useMemo, useEffect } from "react";
 
+// ── Bundle patterns directly ─────────────────────────────────────────────────
+// Instead of importing all.txt (which requires a loader), convert it to a JS
+// module once using the script below, then import that instead.
+//
+// HOW TO CONVERT (run once in your terminal):
+//   node -e "
+//     const fs = require('fs');
+//     const lines = fs.readFileSync('./all.txt','utf8')
+//       .split('\n').map(l=>l.trim()).filter(l=>/^[1-9]+$/.test(l));
+//     fs.writeFileSync('./patterns.js',
+//       'const patterns = ' + JSON.stringify(lines) + ';\nexport default patterns;\n');
+//     console.log('Done:', lines.length, 'patterns');
+//   "
+//
+// This produces patterns.js next to this file, which is a normal JS import.
+// After that, uncomment the import line below:
+//
+// import BUNDLED_PATTERNS from "./patterns";
+//
+// Until you run the script, the app shows the upload screen as fallback.
+
+let BUNDLED_PATTERNS = null;
+BUNDLED_PATTERNS = (await import("./patterns")).default;  // ← uncomment after converting
+
+function parsePatterns(raw) {
+  return raw.split("\n").map(l => l.trim()).filter(l => /^[1-9]+$/.test(l));
+}
+
 // ── localStorage ────────────────────────────────────────────────────────────
-const LS_SAVED = "plv_saved";
-const LS_TRIED = "plv_tried";
-const LS_PAGE  = "plv_lastPage";
+const LS_SAVED        = "plv_saved";
+const LS_TRIED        = "plv_tried";
+const LS_PAGE         = "plv_page";
+const LS_FILTER_DOTS  = "plv_filterDots";
+const LS_FILTER_START = "plv_filterStart";
 function lsGet(key, fallback) {
   try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
   catch { return fallback; }
@@ -13,6 +43,7 @@ function lsSet(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
+// ── constants ───────────────────────────────────────────────────────────────
 const DOT_POSITIONS = {
   1:[0,0], 2:[1,0], 3:[2,0],
   4:[0,1], 5:[1,1], 6:[2,1],
@@ -20,6 +51,7 @@ const DOT_POSITIONS = {
 };
 const PAGE_SIZE = 60;
 
+// ── inject global responsive CSS once ──────────────────────────────────────
 const CSS = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #060d1a; }
@@ -558,9 +590,10 @@ export default function App() {
 
   const [allPatterns, setAllPatterns] = useState([]);
   const [loaded, setLoaded]           = useState(false);
-  const [page, setPage]               = useState(0);
-  const [filterDots, setFilterDots]   = useState("all");
-  const [filterStart, setFilterStart] = useState("all");
+  const [loading, setLoading]         = useState(false);
+  const [page, setPage]               = useState(() => lsGet(LS_PAGE, 0));
+  const [filterDots, setFilterDots]   = useState(() => lsGet(LS_FILTER_DOTS, "all"));
+  const [filterStart, setFilterStart] = useState(() => lsGet(LS_FILTER_START, "all"));
   const [search, setSearch]           = useState("");
   const [selected, setSelected]       = useState(null);
   const [dragging, setDragging]       = useState(false);
@@ -571,22 +604,39 @@ export default function App() {
   const [savedPatterns, setSavedPatterns] = useState(() => lsGet(LS_SAVED, []));
   const [triedPatterns, setTriedPatterns] = useState(() => lsGet(LS_TRIED, []));
 
-  useEffect(() => { lsSet(LS_SAVED, savedPatterns); }, [savedPatterns]);
-  useEffect(() => { lsSet(LS_TRIED, triedPatterns); }, [triedPatterns]);
-  useEffect(() => { lsSet(LS_PAGE,  page);           }, [page]);
+  useEffect(() => { lsSet(LS_SAVED,        savedPatterns); }, [savedPatterns]);
+  useEffect(() => { lsSet(LS_TRIED,        triedPatterns); }, [triedPatterns]);
+  useEffect(() => { lsSet(LS_PAGE,         page);          }, [page]);
+  useEffect(() => { lsSet(LS_FILTER_DOTS,  filterDots);    }, [filterDots]);
+  useEffect(() => { lsSet(LS_FILTER_START, filterStart);   }, [filterStart]);
+
+  // Auto-load bundled patterns on mount
+  useEffect(() => {
+    if (BUNDLED_PATTERNS) {
+      setLoading(true);
+      setTimeout(() => {
+        setAllPatterns(BUNDLED_PATTERNS);
+        setLoaded(true);
+        setLoading(false);
+        // page/filters already restored from localStorage via useState initializers
+      }, 50);
+    }
+  }, []);
+
+  const loadRaw = useCallback((raw) => {
+    const lines = parsePatterns(raw);
+    setAllPatterns(lines);
+    setLoaded(true);
+    setLastPage(null);
+    // page/filters already restored from localStorage
+  }, []);
 
   const handleFile = useCallback((file) => {
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (e) => {
-      const lines = e.target.result.split("\n").map(l => l.trim()).filter(l => /^[1-9]+$/.test(l));
-      setAllPatterns(lines);
-      setLoaded(true);
-      setPage(lsGet(LS_PAGE, 0));
-      setLastPage(null);
-    };
+    reader.onload = (e) => loadRaw(e.target.result);
     reader.readAsText(file);
-  }, []);
+  }, [loadRaw]);
 
   const onDrop = useCallback((e) => {
     e.preventDefault(); setDragging(false); handleFile(e.dataTransfer.files[0]);
@@ -645,13 +695,31 @@ export default function App() {
             ★ {savedPatterns.length > 0 ? `Saved (${savedPatterns.length})` : "Saved"}
           </button>
         )}
+        {loaded && (
+          <>
+            <input id="plv-file-swap" type="file" accept=".txt" style={{display:"none"}}
+              onChange={e => handleFile(e.target.files[0])}/>
+            <button className="plv-saved-btn" title="Load a different all.txt"
+              onClick={() => document.getElementById("plv-file-swap").click()}
+              style={{ background:"#0d1829", border:"1px solid #1e293b", color:"#334155", fontSize:12 }}>
+              ⇄ file
+            </button>
+          </>
+        )}
       </header>
 
       {/* ── Main Content ── */}
       <main className="plv-content">
 
-        {/* Upload */}
-        {!loaded ? (
+        {/* Loading */}
+        {loading ? (
+          <div style={{ textAlign:"center", padding:"80px 0", color:"#334155" }}>
+            <div style={{ fontSize:32, marginBottom:16 }}>⏳</div>
+            <div style={{ color:"#38bdf8", fontSize:14, letterSpacing:2 }}>Loading patterns…</div>
+          </div>
+
+        /* Upload fallback (only shown if all.txt wasn't bundled) */
+        ) : !loaded ? (
           <div
             className={`plv-upload${dragging?" drag":""}`}
             onDrop={onDrop}
@@ -665,7 +733,9 @@ export default function App() {
             </div>
             <div className="plv-upload-sub">
               or click to browse<br/>
-              from github.com/delight-im/AndroidPatternLock
+              <br/>
+              <strong style={{color:"#475569"}}>Tip:</strong> place <code>all.txt</code> next to this <code>.jsx</code> file<br/>
+              and it will load automatically on every refresh.
             </div>
             <input id="plv-file" type="file" accept=".txt" style={{display:"none"}}
               onChange={e => handleFile(e.target.files[0])}/>
