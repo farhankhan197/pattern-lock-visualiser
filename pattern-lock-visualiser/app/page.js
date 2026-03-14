@@ -13,7 +13,6 @@ function lsSet(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
 }
 
-// ── constants ───────────────────────────────────────────────────────────────
 const DOT_POSITIONS = {
   1:[0,0], 2:[1,0], 3:[2,0],
   4:[0,1], 5:[1,1], 6:[2,1],
@@ -21,7 +20,6 @@ const DOT_POSITIONS = {
 };
 const PAGE_SIZE = 60;
 
-// ── inject global responsive CSS once ──────────────────────────────────────
 const CSS = `
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #060d1a; }
